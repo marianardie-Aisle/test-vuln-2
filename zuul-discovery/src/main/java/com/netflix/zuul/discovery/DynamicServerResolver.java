@@ -45,6 +45,9 @@ public class DynamicServerResolver implements Resolver<DiscoveryResult> {
 
     private static final Logger LOG = LoggerFactory.getLogger(DynamicServerResolver.class);
 
+    private static final String DEFAULT_LB_NAME = "com.netflix.loadbalancer.ZoneAwareLoadBalancer";
+    private static final Set<String> ALLOWED_LOAD_BALANCERS = Set.of(DEFAULT_LB_NAME);
+
     private final DynamicServerListLoadBalancer<?> loadBalancer;
     private ResolverListener<DiscoveryResult> listener;
 
@@ -98,7 +101,14 @@ public class DynamicServerResolver implements Resolver<DiscoveryResult> {
 
         // Use a hard coded string for the LB default name to avoid a dependency on Ribbon classes.
         String loadBalancerClassName = clientConfig.get(
-                CommonClientConfigKey.NFLoadBalancerClassName, "com.netflix.loadbalancer.ZoneAwareLoadBalancer");
+                CommonClientConfigKey.NFLoadBalancerClassName, DEFAULT_LB_NAME);
+
+        // Enforce a small allowlist for load-balancer implementation classes to avoid unsafe reflection
+        if (!ALLOWED_LOAD_BALANCERS.contains(loadBalancerClassName)) {
+            LOG.warn("Requested LoadBalancer class '{}' is not in the allowlist. Falling back to default '{}'.",
+                    loadBalancerClassName, DEFAULT_LB_NAME);
+            loadBalancerClassName = DEFAULT_LB_NAME;
+        }
 
         DynamicServerListLoadBalancer<?> lb;
         try {
