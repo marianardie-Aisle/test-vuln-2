@@ -21,9 +21,13 @@ import com.netflix.zuul.filters.FilterType;
 import com.netflix.zuul.filters.ZuulFilter;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,11 +46,52 @@ public final class DynamicFilterLoader implements FilterLoader {
     private final FilterRegistry filterRegistry;
 
     private final FilterFactory filterFactory;
+    private final Map<String, Class<? extends ZuulFilter<?, ?>>> registeredFiltersByClassName;
 
     @Inject
     public DynamicFilterLoader(FilterRegistry filterRegistry, FilterFactory filterFactory) {
+        this(filterRegistry, filterFactory, loadRegisteredFilters(resolveClassLoader()));
+    }
+
+    DynamicFilterLoader(
+            FilterRegistry filterRegistry,
+            FilterFactory filterFactory,
+            Set<? extends Class<? extends ZuulFilter<?, ?>>> registeredFilters) {
+        this(filterRegistry, filterFactory, mapRegisteredFilters(registeredFilters));
+    }
+
+    private DynamicFilterLoader(
+            FilterRegistry filterRegistry,
+            FilterFactory filterFactory,
+            Map<String, Class<? extends ZuulFilter<?, ?>>> registeredFiltersByClassName) {
         this.filterRegistry = filterRegistry;
         this.filterFactory = filterFactory;
+        this.registeredFiltersByClassName = registeredFiltersByClassName;
+    }
+
+    private static ClassLoader resolveClassLoader() {
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+        if (classLoader != null) {
+            return classLoader;
+        }
+        return DynamicFilterLoader.class.getClassLoader();
+    }
+
+    private static Set<Class<ZuulFilter<?, ?>>> loadRegisteredFilters(ClassLoader classLoader) {
+        try {
+            return StaticFilterLoader.loadFilterTypesFromResources(classLoader);
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to load registered Zuul filters.", e);
+        }
+    }
+
+    private static Map<String, Class<? extends ZuulFilter<?, ?>>> mapRegisteredFilters(
+            Set<? extends Class<? extends ZuulFilter<?, ?>>> registeredFilters) {
+        Map<String, Class<? extends ZuulFilter<?, ?>>> filtersByClassName = new HashMap<>();
+        for (Class<? extends ZuulFilter<?, ?>> registeredFilter : registeredFilters) {
+            filtersByClassName.put(registeredFilter.getName(), registeredFilter);
+        }
+        return Collections.unmodifiableMap(filtersByClassName);
     }
 
     /**
@@ -92,14 +137,14 @@ public final class DynamicFilterLoader implements FilterLoader {
 
     @Override
     public ZuulFilter<?, ?> putFilterForClassName(String className) throws Exception {
-        Class<?> clazz = Class.forName(className);
-        if (!ZuulFilter.class.isAssignableFrom(clazz)) {
-            throw new IllegalArgumentException("Specified filter class does not implement ZuulFilter interface!");
-        } else {
-            ZuulFilter<?, ?> filter = filterFactory.newInstance(clazz);
-            putFilter(className, filter, System.currentTimeMillis());
-            return filter;
+        Class<? extends ZuulFilter<?, ?>> clazz = registeredFiltersByClassName.get(className);
+        if (clazz == null) {
+            throw new IllegalArgumentException("Specified filter class is not in the registered filter allowlist: " + className);
         }
+
+        ZuulFilter<?, ?> filter = filterFactory.newInstance(clazz);
+        putFilter(className, filter, System.currentTimeMillis());
+        return filter;
     }
 
     /**

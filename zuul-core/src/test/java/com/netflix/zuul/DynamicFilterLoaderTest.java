@@ -16,6 +16,7 @@
 package com.netflix.zuul;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.netflix.zuul.filters.BaseSyncFilter;
 import com.netflix.zuul.filters.FilterRegistry;
@@ -24,6 +25,7 @@ import com.netflix.zuul.filters.MutableFilterRegistry;
 import com.netflix.zuul.filters.ZuulFilter;
 import com.netflix.zuul.message.ZuulMessage;
 import java.util.Collection;
+import java.util.Collections;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockitoAnnotations;
@@ -40,7 +42,7 @@ class DynamicFilterLoaderTest {
     void before() throws Exception {
         MockitoAnnotations.initMocks(this);
 
-        loader = new DynamicFilterLoader(registry, filterFactory);
+        loader = new DynamicFilterLoader(registry, filterFactory, Collections.singleton(TestZuulFilter.class));
     }
 
     @Test
@@ -52,14 +54,19 @@ class DynamicFilterLoaderTest {
     }
 
     @Test
-    void testPutFiltersForClassesException() throws Exception {
-        Exception caught = null;
-        try {
-            loader.putFiltersForClasses(new String[] {"asdf"});
-        } catch (ClassNotFoundException e) {
-            caught = e;
-        }
-        assertThat(caught != null).isTrue();
+    void testPutFiltersForClassesException() {
+        assertThatThrownBy(() -> loader.putFiltersForClasses(new String[] {"asdf"}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("registered filter allowlist");
+        Collection<ZuulFilter<?, ?>> filters = registry.getAllFilters();
+        assertThat(filters.size()).isEqualTo(0);
+    }
+
+    @Test
+    void testPutFiltersForClassesRejectsUnregisteredZuulFilter() {
+        assertThatThrownBy(() -> loader.putFiltersForClasses(new String[] {UnregisteredZuulFilter.class.getName()}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(UnregisteredZuulFilter.class.getName());
         Collection<ZuulFilter<?, ?>> filters = registry.getAllFilters();
         assertThat(filters.size()).isEqualTo(0);
     }
@@ -79,11 +86,35 @@ class DynamicFilterLoaderTest {
         assertThat(filter.filterType()).isEqualTo(FilterType.INBOUND);
     }
 
+    @Filter(order = 0, type = FilterType.INBOUND)
     private static final class TestZuulFilter extends BaseSyncFilter {
 
         TestZuulFilter() {
             super();
         }
+
+        @Override
+        public FilterType filterType() {
+            return FilterType.INBOUND;
+        }
+
+        @Override
+        public int filterOrder() {
+            return 0;
+        }
+
+        @Override
+        public boolean shouldFilter(ZuulMessage msg) {
+            return false;
+        }
+
+        @Override
+        public ZuulMessage apply(ZuulMessage msg) {
+            return null;
+        }
+    }
+
+    private static final class UnregisteredZuulFilter extends BaseSyncFilter {
 
         @Override
         public FilterType filterType() {
