@@ -24,8 +24,11 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.JarURLConnection;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.CodeSource;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -86,6 +89,24 @@ public final class StaticFilterLoader implements FilterLoader {
     public static Set<Class<ZuulFilter<?, ?>>> loadFilterTypesFromResources(ClassLoader loader) throws IOException {
         Set<Class<ZuulFilter<?, ?>>> filterTypes = new LinkedHashSet<>();
         for (URL url : Collections.list(loader.getResources(RESOURCE_NAME))) {
+            // Determine the origin of this resource so loaded classes can be validated against it.
+            URL resourceOrigin = url;
+            try {
+                if ("jar".equalsIgnoreCase(url.getProtocol())) {
+                    JarURLConnection jconn = (JarURLConnection) url.openConnection();
+                    resourceOrigin = jconn.getJarFileURL();
+                } else {
+                    String ext = url.toExternalForm();
+                    if (ext.endsWith(RESOURCE_NAME)) {
+                        resourceOrigin = new URL(ext.substring(0, ext.length() - RESOURCE_NAME.length()));
+                    }
+                }
+            } catch (IOException e) {
+                // If we can't determine a canonical origin, fall back to the resource URL itself.
+                logger.debug("Unable to determine resource origin for {}: {}", url, e.toString());
+                resourceOrigin = url;
+            }
+
             try (InputStream is = url.openStream();
                     InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8);
                     BufferedReader br = new BufferedReader(isr)) {
@@ -110,6 +131,34 @@ public final class StaticFilterLoader implements FilterLoader {
                             logger.warn("Missing Filter", e);
                             continue;
                         }
+
+                        // Validate that the class was loaded from the same origin as the resource file.
+                        CodeSource cs = clz.getProtectionDomain() == null ? null : clz.getProtectionDomain().getCodeSource();
+                        if (cs == null || cs.getLocation() == null) {
+                            logger.warn("Skipping filter {} because its code source cannot be determined", trimmed);
+                            continue;
+                        }
+
+                        URL classLocation = cs.getLocation();
+                        try {
+                            if (!resourceOrigin.toExternalForm().equals(classLocation.toExternalForm())) {
+                                // In some environments the class location may be a directory URL that
+                                // represents a path that starts with the resource origin. Accept those
+                                // cases as well.
+                                String resourceStr = resourceOrigin.toExternalForm();
+                                String classLocStr = classLocation.toExternalForm();
+                                if (!classLocStr.startsWith(resourceStr)) {
+                                    logger.warn("Skipping filter {} because it was not loaded from same origin as resource {} (class was from {})",
+                                            trimmed, resourceOrigin, classLocation);
+                                    continue;
+                                }
+                            }
+                        } catch (IllegalArgumentException | NullPointerException e) {
+                            // If URL comparisons fail for any reason, be conservative and skip the class.
+                            logger.warn("Skipping filter {} due to inability to validate origin: {}", trimmed, e.toString());
+                            continue;
+                        }
+
                         @SuppressWarnings("unchecked")
                         Class<ZuulFilter<?, ?>> filterClz = (Class<ZuulFilter<?, ?>>) clz.asSubclass(ZuulFilter.class);
                         filterTypes.add(filterClz);
